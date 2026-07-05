@@ -1,0 +1,42 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          gleam-version: "1.14.0"
+          rebar3-version: "3"
+
+      - name: install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y zip
+
+      - name: test
+        run: gleam test
+
+      - name: package
+        run: VERSION="${GITHUB_REF_NAME#v}" scripts/package-release.sh
+
+      - name: verify
+        run: scripts/verify-release.sh
+
+      - name: publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/dropnest-*.tar.gz
+            dist/dropnest-*.zip
+            dist/*.sha256
