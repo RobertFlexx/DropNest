@@ -89,8 +89,8 @@ brew install erlang
 ## build from source
 
 ```sh
-git clone https://github.com/RobertFlexx/dropnest
-cd dropnest
+git clone https://github.com/RobertFlexx/DropNest
+cd DropNest
 gleam deps download
 gleam build
 gleam run -- serve
