@@ -79,7 +79,9 @@ GitHub Actions builds the shipment archives and publishes the release files to G
 [ ] verify the checksum
 [ ] install with install.sh
 [ ] run dropnest serve
-[ ] run dropnest serve --lan --pin 1234 --dir ~/Downloads/DropNest
+[ ] run dropnest serve --lan --pin family-owl-72 --dir ~/Downloads/DropNest
+[ ] with cloudflared installed, run dropnest serve --tunnel --pin family-owl-72
+[ ] verify two public visitor fingerprints are admitted and a third receives 410
 [ ] open DropNest from another device
 [ ] upload a file from another device
 [ ] confirm the file appears on the host computer

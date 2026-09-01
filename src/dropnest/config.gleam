@@ -16,6 +16,8 @@ pub const default_receive_dir = "./DropNestDrops"
 
 pub const default_max_upload_bytes = 104_857_600
 
+pub const default_max_storage_bytes = 10_737_418_240
+
 pub const default_expiration_minutes = 1440
 
 pub type Config {
@@ -27,7 +29,10 @@ pub type Config {
     data_dir: String,
     receive_dir: String,
     max_upload_bytes: Int,
+    max_storage_bytes: Int,
     default_expiration_minutes: Int,
+    public_url: Option(String),
+    tunnel: Bool,
     host_was_set: Bool,
   )
 }
@@ -45,7 +50,60 @@ pub fn from_args(args: List(String)) -> Parsed {
 }
 
 pub fn help_text() -> String {
-  "DropNest - private LAN file and clipboard drop\n\nUsage:\n  dropnest serve [options]\n  dropnest send-text <text> [options]\n  dropnest send <path> [options]\n  dropnest help\n\nCommands:\n  serve                  Start DropNest\n  send-text <text>       Add a text drop without starting the server\n  send <path>            Add a local file drop without starting the server\n\nOptions:\n  --config <path>        Read defaults from a config file\n  --lan                  Allow other devices on your Wi-Fi to connect\n  --pin <pin>            Require a PIN in LAN mode\n  --dir <path>           Directory where uploaded files are saved\n  --data-dir <path>      Directory where metadata is stored\n  --host <host>          Host to bind in LAN mode\n  --port <port>          Port to serve on\n  --max-upload-mb <mb>   Maximum accepted upload size\n  --expires <minutes>    Default drop lifetime. Use 0 for never.\n  --help                 Show this help\n\nConfig file:\n  DropNest reads ./dropnest.conf when it exists, or the path passed with --config.\n  Use key=value lines such as lan=true, pin=1234, dir=/tmp/DropNest.\n"
+  "DropNest - private family file and clipboard sharing\n\nUsage:\n  dropnest serve [options]\n  dropnest send-text <text> [options]\n  dropnest send <path> [options]\n  dropnest help\n\nCommands:\n  serve                  Start DropNest\n  send-text <text>       Add a text drop without starting the server\n  send <path>            Add a local file drop without starting the server\n\nOptions:\n  --config <path>        Read defaults from a config file\n  --lan                  Allow other devices on your Wi-Fi to connect\n  --tunnel               Create a 15-minute HTTPS invite (2 visitors)\n  --pin <access-key>     Require an access key (8+ characters)\n  --public-url <https>   Public HTTPS URL provided by your own TLS proxy\n  --dir <path>           Directory where uploaded files are saved\n  --data-dir <path>      Directory where metadata is stored\n  --host <host>          Host to bind in LAN mode\n  --port <port>          Port to serve on\n  --max-upload-mb <mb>   Maximum accepted upload size\n  --max-storage-mb <mb>  Maximum total stored file data (default 10240)\n  --expires <minutes>    Default drop lifetime. Use 0 for never.\n  --help                 Show this help\n\nExamples:\n  dropnest serve --lan --pin family-owl-72\n  dropnest serve --tunnel --pin family-owl-72\n\nConfig file:\n  DropNest reads ./dropnest.conf when it exists, or the path passed with --config.\n  Use key=value lines such as lan=true, pin=family-owl-72, dir=/tmp/DropNest.\n"
+}
+
+pub fn validate_security(config: Config) -> Result(Nil, String) {
+  case config.lan, config.tunnel, config.pin, config.public_url {
+    True, _, None, _ ->
+      Error(
+        "LAN mode requires --pin with an access key of at least 8 characters.",
+      )
+    _, True, None, _ ->
+      Error(
+        "Temporary tunnel mode requires --pin with an 8+ character access key.",
+      )
+    _, _, None, Some(_) ->
+      Error("Public HTTPS mode requires --pin with an 8+ character access key.")
+    _, _, _, _ -> validate_access_key(config)
+  }
+}
+
+fn validate_access_key(config: Config) -> Result(Nil, String) {
+  case config.pin {
+    Some(pin) -> {
+      let size = string.byte_size(pin)
+      case size < 8, size > 128 {
+        True, _ -> Error("The access key must be at least 8 characters long.")
+        _, True ->
+          Error("The access key must be no more than 128 characters long.")
+        _, _ -> validate_public_url(config)
+      }
+    }
+    None -> validate_public_url(config)
+  }
+}
+
+fn validate_public_url(config: Config) -> Result(Nil, String) {
+  case config.tunnel, config.public_url {
+    True, Some(_) -> Error("Use either --tunnel or --public-url, not both.")
+    _, Some(url) ->
+      case string.starts_with(url, "https://") {
+        True -> validate_limits(config)
+        False -> Error("--public-url must start with https://.")
+      }
+    _, None -> validate_limits(config)
+  }
+}
+
+fn validate_limits(config: Config) -> Result(Nil, String) {
+  case config.max_upload_bytes <= config.max_storage_bytes {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "The total storage limit must be at least the per-file upload limit.",
+      )
+  }
 }
 
 pub fn bind_address(config: Config) -> String {
@@ -102,7 +160,10 @@ pub fn default() -> Config {
     data_dir: default_data_dir,
     receive_dir: default_receive_dir,
     max_upload_bytes: default_max_upload_bytes,
+    max_storage_bytes: default_max_storage_bytes,
     default_expiration_minutes: default_expiration_minutes,
+    public_url: None,
+    tunnel: False,
     host_was_set: False,
   )
 }
@@ -134,11 +195,15 @@ fn parse(args: List(String), config: Config) -> Parsed {
       }
       parse(rest, Config(..config, lan: True, host: host))
     }
+    ["--tunnel", ..rest] -> parse(rest, Config(..config, tunnel: True))
     ["--host"] -> ParseError("Missing value after --host")
     ["--host", host, ..rest] ->
       parse(rest, Config(..config, host: host, host_was_set: True))
     ["--pin"] -> ParseError("Missing value after --pin")
     ["--pin", pin, ..rest] -> parse(rest, Config(..config, pin: Some(pin)))
+    ["--public-url"] -> ParseError("Missing value after --public-url")
+    ["--public-url", url, ..rest] ->
+      parse(rest, Config(..config, public_url: Some(trim_trailing_slash(url))))
     ["--dir"] -> ParseError("Missing value after --dir")
     ["--dir", path, ..rest] -> parse(rest, Config(..config, receive_dir: path))
     ["--data-dir"] -> ParseError("Missing value after --data-dir")
@@ -155,6 +220,17 @@ fn parse(args: List(String), config: Config) -> Parsed {
         False -> ParseError("Invalid value for --max-upload-mb: " <> size)
       }
     }
+    ["--max-storage-mb"] -> ParseError("Missing value after --max-storage-mb")
+    ["--max-storage-mb", size, ..rest] -> {
+      let bytes = case int.parse(size) {
+        Ok(value) if value > 0 -> value * 1024 * 1024
+        _ -> 0
+      }
+      case bytes > 0 {
+        True -> parse(rest, Config(..config, max_storage_bytes: bytes))
+        False -> ParseError("Invalid value for --max-storage-mb: " <> size)
+      }
+    }
     ["--expires"] -> ParseError("Missing value after --expires")
     ["--expires", minutes, ..rest] -> {
       case parse_minutes(minutes) {
@@ -166,7 +242,8 @@ fn parse(args: List(String), config: Config) -> Parsed {
     ["--port"] -> ParseError("Missing value after --port")
     ["--port", port, ..rest] -> {
       case int.parse(port) {
-        Ok(value) if value > 0 -> parse(rest, Config(..config, port: value))
+        Ok(value) if value > 0 && value <= 65_535 ->
+          parse(rest, Config(..config, port: value))
         _ -> ParseError("Invalid value for --port: " <> port)
       }
     }
@@ -226,10 +303,16 @@ fn apply_config_value(config: Config, key: String, value: String) -> Config {
         True -> Config(..config, lan: True, host: lan_config_host(config))
         False -> Config(..config, lan: False)
       }
+    "tunnel" -> Config(..config, tunnel: bool_value(value))
     "pin" ->
       case value {
         "" -> Config(..config, pin: None)
         _ -> Config(..config, pin: Some(value))
+      }
+    "public_url" ->
+      case value {
+        "" -> Config(..config, public_url: None)
+        _ -> Config(..config, public_url: Some(trim_trailing_slash(value)))
       }
     "dir" -> Config(..config, receive_dir: value)
     "receive_dir" -> Config(..config, receive_dir: value)
@@ -237,12 +320,17 @@ fn apply_config_value(config: Config, key: String, value: String) -> Config {
     "host" -> Config(..config, host: value, host_was_set: True)
     "port" ->
       case int.parse(value) {
-        Ok(port) if port > 0 -> Config(..config, port: port)
+        Ok(port) if port > 0 && port <= 65_535 -> Config(..config, port: port)
         _ -> config
       }
     "max_upload_mb" ->
       case int.parse(value) {
         Ok(mb) if mb > 0 -> Config(..config, max_upload_bytes: mb * 1024 * 1024)
+        _ -> config
+      }
+    "max_storage_mb" ->
+      case int.parse(value) {
+        Ok(mb) if mb > 0 -> Config(..config, max_storage_bytes: mb * 1024 * 1024)
         _ -> config
       }
     "expires" ->
@@ -275,5 +363,13 @@ fn parse_minutes(value: String) -> Result(Int, Nil) {
   case int.parse(value) {
     Ok(minutes) if minutes >= 0 -> Ok(minutes)
     _ -> Error(Nil)
+  }
+}
+
+fn trim_trailing_slash(value: String) -> String {
+  let clean = string.trim(value)
+  case string.ends_with(clean, "/") {
+    True -> string.drop_end(clean, up_to: 1)
+    False -> clean
   }
 }

@@ -5,164 +5,226 @@ import dropnest/net
 import dropnest/storage
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import wisp
 
-pub fn home(cfg: config.Config, drops: List(Drop)) -> String {
-  page("DropNest", [
-    header(),
-    status_card(cfg),
-    upload_card(cfg),
-    text_card(cfg),
-    drops_section(drops),
-    footer(),
-  ])
+pub fn home(
+  cfg: config.Config,
+  drops: List(Drop),
+  csrf_token: String,
+  nonce: String,
+  invite_url: Option(String),
+) -> String {
+  page(
+    "DropNest",
+    [
+      header(cfg, csrf_token),
+      share_card(cfg, invite_url),
+      "<div class='composer-grid'>\n",
+      upload_card(cfg, csrf_token),
+      text_card(cfg, csrf_token),
+      "</div>\n",
+      drops_section(drops, csrf_token),
+      details_card(cfg),
+      footer(),
+    ],
+    nonce,
+  )
 }
 
-pub fn unlock() -> String {
-  page("Unlock DropNest", [
-    html([
-      "<section class='auth-card'>",
-      "  <p class='kicker'>Protected DropNest</p>",
-      "  <h1>Enter PIN</h1>",
-      "  <p class='muted'>This DropNest is open on the local network. Enter the PIN shown by the person running it.</p>",
-      "  <form method='post' action='/unlock'>",
-      "    <label for='pin'>PIN</label>",
-      "    <input id='pin' name='pin' inputmode='numeric' autocomplete='one-time-code' placeholder='1234' required autofocus>",
-      "    <button class='primary full'>Unlock DropNest</button>",
-      "  </form>",
-      "  <p class='fineprint'>No account needed. This only unlocks access from this browser.</p>",
-      "</section>",
-    ]),
-  ])
+pub fn unlock(csrf_token: String, nonce: String, failed: Bool) -> String {
+  let error = case failed {
+    True ->
+      "<p class='form-error' role='alert'>That access key did not match.</p>"
+    False -> ""
+  }
+  page(
+    "Unlock DropNest",
+    [
+      html([
+        "<section class='auth-card'>",
+        "  <div class='brand-mark'>D</div>",
+        "  <p class='kicker'>Private DropNest</p>",
+        "  <h1>Welcome in</h1>",
+        "  <p class='muted'>Enter the family access key, or open the temporary friend link you received.</p>",
+        error,
+        "  <form method='post' action='/unlock'>",
+        csrf_input(csrf_token),
+        "    <label for='pin'>Access key</label>",
+        "    <input id='pin' name='pin' type='password' autocomplete='current-password' minlength='8' maxlength='128' placeholder='Family access key' required autofocus>",
+        "    <button class='primary full'>Unlock DropNest</button>",
+        "  </form>",
+        "  <p class='fineprint'>No account, analytics, or cloud storage. Access lasts for this browser session.</p>",
+        "</section>",
+      ]),
+    ],
+    nonce,
+  )
 }
 
-pub fn message(title: String, text: String) -> String {
-  page(title, [
-    html([
-      "<section class='auth-card'>",
-      "  <h1>" <> esc(title) <> "</h1>",
-      "  <p class='muted'>" <> esc(text) <> "</p>",
-      "  <p><a class='button secondary' href='/'>Back home</a></p>",
-      "</section>",
-    ]),
-  ])
+pub fn message(title: String, text: String, nonce: String) -> String {
+  page(
+    title,
+    [
+      html([
+        "<section class='auth-card'>",
+        "  <h1>" <> esc(title) <> "</h1>",
+        "  <p class='muted'>" <> esc(text) <> "</p>",
+        "  <p><a class='button secondary' href='/'>Back home</a></p>",
+        "</section>",
+      ]),
+    ],
+    nonce,
+  )
 }
 
-fn header() -> String {
+fn header(cfg: config.Config, csrf_token: String) -> String {
+  let logout = case cfg.pin {
+    Some(_) ->
+      "<form method='post' action='/logout' class='logout-form'>"
+      <> csrf_input(csrf_token)
+      <> "<button class='ghost compact'>Lock</button></form>"
+    None -> ""
+  }
   html([
     "<header class='site-header'>",
-    "  <div>",
-    "    <p class='kicker'>Local utility</p>",
-    "    <h1>DropNest</h1>",
-    "    <p>Private LAN file and clipboard drop.</p>",
+    "  <div class='brand'>",
+    "    <div class='brand-mark'>D</div>",
+    "    <div><h1>DropNest</h1><p>Share directly. Keep ownership.</p></div>",
     "  </div>",
+    logout,
     "</header>",
   ])
 }
 
-fn status_card(cfg: config.Config) -> String {
+fn share_card(cfg: config.Config, invite_url: Option(String)) -> String {
   let mode = case cfg.lan {
-    True -> "LAN"
-    False -> "Local"
+    True -> "Same Wi-Fi"
+    False -> "This device"
   }
-  let pin = case cfg.pin {
-    Some(_) -> "enabled"
-    None -> "disabled"
-  }
-  let address = case cfg.lan {
-    True -> net.primary_lan_url(cfg.host, cfg.port)
-    False -> "http://localhost:" <> int.to_string(cfg.port)
-  }
-  let warning = case cfg.lan {
-    True ->
-      "<p class='notice warning'>LAN mode lets other devices on your network upload files to this computer.</p>"
-    False ->
-      "<p class='notice'>Local mode is only reachable from this computer. Start with <code>--lan</code> to use another device.</p>"
+  let #(address, label, note) = case invite_url, cfg.public_url, cfg.lan {
+    Some(url), _, _ -> #(
+      url,
+      "Temporary friend link",
+      "Works from anywhere for 15 minutes and grants access to two visitor fingerprints. It disappears when DropNest stops.",
+    )
+    None, Some(url), _ -> #(
+      url,
+      "Public HTTPS address",
+      "Protected by your access key and HTTPS proxy.",
+    )
+    None, None, True -> #(
+      net.primary_lan_url(cfg.host, cfg.port),
+      "Family link",
+      "Open this on another device connected to the same Wi-Fi.",
+    )
+    _, _, _ -> #(
+      "http://localhost:" <> int.to_string(cfg.port),
+      "Local address",
+      "Only this computer can open the link until LAN or tunnel mode is enabled.",
+    )
   }
 
   html([
-    "<section class='card status-card'>",
-    "  <div class='card-heading'>",
-    "    <h2>Status</h2>",
+    "<section class='share-card'>",
+    "  <div class='share-heading'>",
+    "    <div><p class='eyebrow'>"
+      <> esc(label)
+      <> "</p><h2>Bring someone into the nest</h2></div>",
     "    <span class='pill'>" <> esc(mode) <> "</span>",
     "  </div>",
-    "  <dl>",
-    "    <div>",
-    "      <dt>Open</dt>",
-    "      <dd><code>" <> esc(address) <> "</code></dd>",
-    "    </div>",
-    "    <div>",
-    "      <dt>Phone setup</dt>",
-    "      <dd><button class='secondary compact' type='button' data-qr='"
+    "  <p class='share-note'>" <> esc(note) <> "</p>",
+    "  <div class='link-row'>",
+    "    <input value='"
       <> esc(address)
-      <> "'>Show QR</button></dd>",
-    "    </div>",
-    "    <div>",
-    "      <dt>Receive directory</dt>",
-    "      <dd><code>" <> esc(cfg.receive_dir) <> "</code></dd>",
-    "    </div>",
-    "    <div>",
-    "      <dt>Upload limit</dt>",
-    "      <dd>" <> format_size(cfg.max_upload_bytes) <> "</dd>",
-    "    </div>",
-    "    <div>",
-    "      <dt>PIN</dt>",
-    "      <dd>" <> esc(pin) <> "</dd>",
-    "    </div>",
-    "    <div>",
-    "      <dt>Expiration</dt>",
-    "      <dd>After "
-      <> format_expiration_label(cfg.default_expiration_minutes)
-      <> "</dd>",
-    "    </div>",
-    "  </dl>",
+      <> "' readonly aria-label='Share link'>",
+    "    <button class='primary' type='button' data-copy='"
+      <> esc(address)
+      <> "'>Copy link</button>",
+    "    <button class='secondary' type='button' data-qr='"
+      <> esc(address)
+      <> "'>QR code</button>",
+    "  </div>",
     "  <div class='qr-panel' id='qr-panel' hidden>",
     "    <div id='qr-code' aria-label='QR code for DropNest URL'></div>",
-    "    <p class='muted'>Scan this from another device on the same network, or copy the URL above.</p>",
+    "    <p class='muted'>Scan with the device you want to invite.</p>",
     "  </div>",
-    "  " <> warning,
     "</section>",
   ])
 }
 
-fn upload_card(cfg: config.Config) -> String {
+fn upload_card(cfg: config.Config, csrf_token: String) -> String {
   html([
-    "<section class='card'>",
+    "<section class='card composer-card'>",
     "  <div class='card-heading'>",
     "    <h2>Drop a file</h2>",
     "    <span class='limit'>Max "
       <> format_size(cfg.max_upload_bytes)
       <> "</span>",
     "  </div>",
-    "  <p class='muted'>Files uploaded here are saved on the computer running DropNest.</p>",
+    "  <p class='muted'>Stored on the host with a SHA-256 integrity fingerprint.</p>",
     "  <form method='post' action='/drops/file' enctype='multipart/form-data'>",
+    csrf_input(csrf_token),
     "    <label class='filebox' data-dropzone>",
-    "      <span class='file-icon'>FILE</span>",
-    "      <strong>Choose a file</strong>",
-    "      <small>Stored safely in the receive directory using an internal filename.</small>",
+    "      <span class='file-icon'>↑</span>",
+    "      <strong>Choose or drop a file</strong>",
+    "      <small>The original name is preserved; the storage path is not.</small>",
     "      <input type='file' name='file' required>",
     "    </label>",
     expiration_select("file-expires", cfg.default_expiration_minutes),
-    "    <button class='primary'>Upload file</button>",
+    "    <button class='primary full'>Upload file</button>",
     "  </form>",
     "</section>",
   ])
 }
 
-fn text_card(cfg: config.Config) -> String {
+fn text_card(cfg: config.Config, csrf_token: String) -> String {
   html([
-    "<section class='card'>",
+    "<section class='card composer-card'>",
     "  <h2>Drop text</h2>",
     "  <p class='muted'>Links, commands, notes, snippets, and clipboard text.</p>",
     "  <form method='post' action='/drops/text'>",
+    csrf_input(csrf_token),
     "    <textarea name='content' rows='7' maxlength='200000' placeholder='Paste text, link, command, or note...' required></textarea>",
     expiration_select("text-expires", cfg.default_expiration_minutes),
-    "    <button class='primary'>Send text</button>",
+    "    <button class='primary full'>Share text</button>",
     "  </form>",
     "</section>",
   ])
+}
+
+fn details_card(cfg: config.Config) -> String {
+  let access = case cfg.pin {
+    Some(_) -> "Access key on"
+    None -> "Local only"
+  }
+  html([
+    "<details class='card server-details'>",
+    "  <summary>Storage & security details</summary>",
+    "  <dl>",
+    "    <div><dt>Files live in</dt><dd><code>"
+      <> esc(cfg.receive_dir)
+      <> "</code></dd></div>",
+    "    <div><dt>Upload limit</dt><dd>"
+      <> format_size(cfg.max_upload_bytes)
+      <> "</dd></div>",
+    "    <div><dt>Storage ceiling</dt><dd>"
+      <> format_size(cfg.max_storage_bytes)
+      <> "</dd></div>",
+    "    <div><dt>Default lifetime</dt><dd>"
+      <> format_expiration_label(cfg.default_expiration_minutes)
+      <> "</dd></div>",
+    "    <div><dt>Protection</dt><dd>"
+      <> access
+      <> " · CSRF guarded · SHA-256 checked</dd></div>",
+    "  </dl>",
+    "</details>",
+  ])
+}
+
+fn csrf_input(token: String) -> String {
+  "<input type='hidden' name='csrf_token' value='" <> esc(token) <> "'>"
 }
 
 fn expiration_select(id: String, default_minutes: Int) -> String {
@@ -193,7 +255,7 @@ fn option(value: String, label: String, selected: Bool) -> String {
   <> "</option>"
 }
 
-fn drops_section(drops: List(Drop)) -> String {
+fn drops_section(drops: List(Drop), csrf_token: String) -> String {
   case drops {
     [] ->
       html([
@@ -213,14 +275,17 @@ fn drops_section(drops: List(Drop)) -> String {
         "    <span class='limit'>Newest first</span>",
         "  </div>",
         "  <div class='drops'>",
-        string_join(list.map(drops, drop_item), ""),
+        string_join(
+          list.map(drops, fn(item) { drop_item(item, csrf_token) }),
+          "",
+        ),
         "  </div>",
         "</section>",
       ])
   }
 }
 
-fn drop_item(item: Drop) -> String {
+fn drop_item(item: Drop, csrf_token: String) -> String {
   let icon = case item.kind {
     File -> "FILE"
     Text -> "TEXT"
@@ -248,15 +313,29 @@ fn drop_item(item: Drop) -> String {
     "    <h3>" <> esc(display_title(item)) <> "</h3>",
     "    <p>" <> meta(item) <> "</p>",
     preview(item),
+    checksum(item),
     "  </div>",
     "  <div class='actions'>",
     "    " <> actions,
     "    <form method='post' action='/drops/" <> esc(item.id) <> "/delete'>",
-    "      <button class='danger'>Delete</button>",
+    csrf_input(csrf_token),
+    "      <button class='danger' data-confirm-delete>Delete</button>",
     "    </form>",
     "  </div>",
     "</article>",
   ])
+}
+
+fn checksum(item: Drop) -> String {
+  case item.checksum_sha256 {
+    Some(value) ->
+      "<button class='checksum' type='button' data-copy='"
+      <> esc(value)
+      <> "' title='Copy full SHA-256'>SHA-256 · "
+      <> esc(string.slice(value, at_index: 0, length: 12))
+      <> "…</button>"
+    None -> ""
+  }
 }
 
 fn display_title(item: Drop) -> String {
@@ -285,15 +364,20 @@ fn meta(item: Drop) -> String {
     File, Some(bytes) -> " · " <> format_size(bytes)
     _, _ -> ""
   }
+  let expiration = case item.expires_at {
+    0 -> "never expires"
+    expires_at ->
+      "expires in " <> format_duration(expires_at - storage.now_seconds())
+  }
   kind
   <> size
   <> " · created "
   <> format_time(item.created_at)
-  <> " · expires in "
-  <> format_duration(item.expires_at - storage.now_seconds())
+  <> " · "
+  <> expiration
 }
 
-fn page(title: String, body: List(String)) -> String {
+fn page(title: String, body: List(String), nonce: String) -> String {
   html([
     "<!doctype html>",
     "<html lang='en'>",
@@ -301,7 +385,7 @@ fn page(title: String, body: List(String)) -> String {
     "  <meta charset='utf-8'>",
     "  <meta name='viewport' content='width=device-width, initial-scale=1'>",
     "  <title>" <> esc(title) <> "</title>",
-    "  <style>",
+    "  <style nonce='" <> esc(nonce) <> "'>",
     css(),
     "  </style>",
     "</head>",
@@ -309,7 +393,7 @@ fn page(title: String, body: List(String)) -> String {
     "  <main class='shell'>",
     string_join(body, ""),
     "  </main>",
-    "  <script>",
+    "  <script nonce='" <> esc(nonce) <> "'>",
     js(),
     "  </script>",
     "</body>",
@@ -318,7 +402,7 @@ fn page(title: String, body: List(String)) -> String {
 }
 
 fn footer() -> String {
-  "<footer>DropNest stores drops locally on this computer. No accounts, no cloud, no tracking.</footer>"
+  "<footer>Your host keeps the files. DropNest keeps no cloud copy, account, or tracking profile.</footer>"
 }
 
 fn esc(value: String) -> String {
@@ -343,7 +427,11 @@ fn format_size(bytes: Int) -> String {
     False ->
       case bytes < 1024 * 1024 {
         True -> int.to_string(bytes / 1024) <> " KB"
-        False -> int.to_string(bytes / 1024 / 1024) <> " MB"
+        False ->
+          case bytes < 1024 * 1024 * 1024 {
+            True -> int.to_string(bytes / 1024 / 1024) <> " MB"
+            False -> int.to_string(bytes / 1024 / 1024 / 1024) <> " GB"
+          }
       }
   }
 }
@@ -777,6 +865,139 @@ fn css() -> String {
       "  margin-top: 22px;",
       "}",
       "",
+      "/* Refined family-sharing layout */",
+      ":root {",
+      "  --bg: #f6f7f3;",
+      "  --card: #ffffff;",
+      "  --ink: #15231f;",
+      "  --muted: #65716c;",
+      "  --line: #dce3df;",
+      "  --soft: #f0f4f1;",
+      "  --soft2: #e9efeb;",
+      "  --accent: #176c57;",
+      "  --accent2: #0f5141;",
+      "}",
+      "",
+      "body {",
+      "  background: radial-gradient(circle at 50% -10%, #e5f1eb 0, var(--bg) 32rem);",
+      "}",
+      "",
+      ".shell {",
+      "  width: min(1040px, 100%);",
+      "  padding-top: 22px;",
+      "}",
+      "",
+      ".site-header {",
+      "  display: flex;",
+      "  align-items: center;",
+      "  justify-content: space-between;",
+      "  gap: 18px;",
+      "  padding: 10px 2px 22px;",
+      "  border: 0;",
+      "  border-radius: 0;",
+      "  box-shadow: none;",
+      "  background: transparent;",
+      "}",
+      "",
+      ".brand { display: flex; align-items: center; gap: 12px; }",
+      ".brand-mark {",
+      "  display: grid;",
+      "  place-items: center;",
+      "  width: 42px;",
+      "  height: 42px;",
+      "  flex: 0 0 auto;",
+      "  border-radius: 13px;",
+      "  background: var(--accent);",
+      "  color: #fff;",
+      "  font-size: 1.05rem;",
+      "  font-weight: 900;",
+      "  box-shadow: 0 8px 22px rgba(23, 108, 87, .2);",
+      "}",
+      "",
+      ".site-header h1 {",
+      "  margin: 0;",
+      "  font-size: 1.18rem;",
+      "  line-height: 1.2;",
+      "  letter-spacing: -.025em;",
+      "}",
+      ".site-header p { margin: 1px 0 0; color: var(--muted); font-size: .9rem; }",
+      ".logout-form { margin: 0; }",
+      "",
+      ".share-card {",
+      "  position: relative;",
+      "  overflow: hidden;",
+      "  padding: clamp(22px, 5vw, 38px);",
+      "  margin-bottom: 16px;",
+      "  border: 1px solid #164b40;",
+      "  border-radius: 20px;",
+      "  color: #f7fffc;",
+      "  background: #123d33;",
+      "  box-shadow: 0 18px 50px rgba(20, 48, 40, .14);",
+      "}",
+      ".share-card::after {",
+      "  content: '';",
+      "  position: absolute;",
+      "  width: 260px;",
+      "  height: 260px;",
+      "  right: -100px;",
+      "  top: -150px;",
+      "  border-radius: 50%;",
+      "  background: rgba(132, 222, 183, .12);",
+      "  pointer-events: none;",
+      "}",
+      ".share-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }",
+      ".share-card h2 { font-size: clamp(1.35rem, 3vw, 2rem); margin: 2px 0 0; letter-spacing: -.035em; }",
+      ".eyebrow { margin: 0; color: #9edfc9; font-weight: 800; font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; }",
+      ".share-card .pill { color: #eafff7; background: rgba(255,255,255,.09); border-color: rgba(255,255,255,.18); }",
+      ".share-note { max-width: 44rem; margin: 10px 0 18px; color: #c6ddd5; }",
+      "",
+      ".link-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 9px; }",
+      ".link-row input { background: rgba(255,255,255,.96); border: 0; color: #183a31; font-size: .93rem; }",
+      ".link-row .primary { background: #dbf7ec; border-color: #dbf7ec; color: #123d33; box-shadow: none; }",
+      ".link-row .primary:hover { background: #fff; }",
+      ".link-row .secondary { background: transparent; border-color: rgba(255,255,255,.35); color: #fff; }",
+      ".link-row .secondary:hover { background: rgba(255,255,255,.1); }",
+      ".share-card .qr-panel { background: #fff; color: var(--ink); border: 0; }",
+      "",
+      ".composer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: stretch; }",
+      ".composer-grid .card { margin: 0; }",
+      ".composer-card { display: flex; flex-direction: column; padding: 24px; }",
+      ".composer-card form { display: flex; flex: 1; flex-direction: column; }",
+      ".composer-card form > .primary { margin-top: auto; }",
+      ".composer-card select { margin-bottom: 16px; }",
+      ".composer-card textarea { margin: 10px 0 14px; }",
+      "",
+      ".card, .auth-card {",
+      "  border-color: var(--line);",
+      "  border-radius: 16px;",
+      "  box-shadow: 0 8px 28px rgba(30, 52, 44, .055);",
+      "}",
+      ".filebox { background: #f7faf8; border-color: #bbccc5; border-radius: 14px; }",
+      ".file-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 11px; background: #e1f1ea; font-size: 1.25rem; }",
+      "",
+      ".ghost { background: transparent; border-color: var(--line); color: var(--muted); }",
+      ".ghost:hover { background: var(--soft); color: var(--ink); }",
+      ".form-error { padding: 10px 12px; border-radius: 10px; color: #8d2e28; background: #fff0ee; border: 1px solid #f0cbc6; }",
+      ".auth-card .brand-mark { margin-bottom: 20px; }",
+      "",
+      ".checksum {",
+      "  min-height: 0;",
+      "  margin-top: 8px;",
+      "  padding: 3px 7px;",
+      "  border: 1px solid var(--line);",
+      "  border-radius: 6px;",
+      "  background: var(--soft);",
+      "  color: var(--muted);",
+      "  font: 700 .72rem ui-monospace, SFMono-Regular, Menlo, monospace;",
+      "}",
+      ".checksum:hover { color: var(--accent); border-color: #b8d3c9; }",
+      "",
+      ".server-details { color: var(--muted); }",
+      ".server-details summary { cursor: pointer; color: var(--ink); font-weight: 800; }",
+      ".server-details dl { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 18px 0 0; }",
+      ".server-details dt { font-size: .76rem; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }",
+      ".server-details dd { margin: 4px 0 0; overflow-wrap: anywhere; }",
+      "",
       "@media (max-width: 700px) {",
       "  .shell {",
       "    padding: 12px;",
@@ -829,6 +1050,12 @@ fn css() -> String {
       "  .filebox {",
       "    padding: 20px 14px;",
       "  }",
+      "",
+      "  .composer-grid { grid-template-columns: 1fr; }",
+      "  .link-row { grid-template-columns: 1fr 1fr; }",
+      "  .link-row input { grid-column: 1 / -1; }",
+      "  .server-details dl { grid-template-columns: 1fr; }",
+      "  .share-heading { flex-direction: column; }",
       "}",
     ],
     "\n",
@@ -1149,7 +1376,27 @@ fn js() -> String {
   string_join(
     [
       qr_engine_js(),
+      "async function copyText(value) {",
+      "  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(value);",
+      "  const field = document.createElement('textarea');",
+      "  field.value = value;",
+      "  field.setAttribute('readonly', '');",
+      "  field.style.position = 'fixed';",
+      "  field.style.opacity = '0';",
+      "  document.body.appendChild(field);",
+      "  field.select();",
+      "  const copied = document.execCommand('copy');",
+      "  field.remove();",
+      "  if (!copied) throw new Error('copy failed');",
+      "}",
+      "",
       "document.addEventListener('click', async event => {",
+      "  const deleteButton = event.target.closest('[data-confirm-delete]');",
+      "  if (deleteButton && !confirm('Delete this drop for everyone?')) {",
+      "    event.preventDefault();",
+      "    return;",
+      "  }",
+      "",
       "  const qrButton = event.target.closest('[data-qr]');",
       "  if (qrButton) {",
       "    const panel = document.getElementById('qr-panel');",
@@ -1170,7 +1417,7 @@ fn js() -> String {
       "  if (!button) return;",
       "",
       "  try {",
-      "    await navigator.clipboard.writeText(button.dataset.copy);",
+      "    await copyText(button.dataset.copy);",
       "    const oldText = button.textContent;",
       "",
       "    button.textContent = 'Copied';",
@@ -1214,6 +1461,17 @@ fn js() -> String {
       "    const file = input.files && input.files[0];",
       "    const strong = dropzone.querySelector('strong');",
       "    if (strong && file) strong.textContent = file.name;",
+      "  });",
+      "}",
+      "",
+      "for (const form of document.querySelectorAll('form')) {",
+      "  form.addEventListener('submit', event => {",
+      "    if (event.defaultPrevented) return;",
+      "    const button = form.querySelector('button[type=submit], button:not([type])');",
+      "    if (!button) return;",
+      "    button.disabled = true;",
+      "    button.dataset.originalText = button.textContent;",
+      "    button.textContent = form.enctype === 'multipart/form-data' ? 'Uploading…' : 'Working…';",
       "  });",
       "}",
     ],

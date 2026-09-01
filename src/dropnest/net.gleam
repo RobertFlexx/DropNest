@@ -4,6 +4,9 @@ import gleam/list
 @external(erlang, "dropnest_ffi", "local_ipv4_addresses")
 fn local_ipv4_addresses() -> List(String)
 
+@external(erlang, "dropnest_ffi", "start_quick_tunnel")
+pub fn start_quick_tunnel(port: Int) -> Result(String, String)
+
 pub fn lan_urls(host: String, port: Int) -> List(String) {
   let hosts = case host {
     "0.0.0.0" -> local_ipv4_addresses()

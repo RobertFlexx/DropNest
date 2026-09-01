@@ -9,6 +9,25 @@ import gleam/string
 import simplifile
 import wisp
 
+@external(erlang, "dropnest_ffi", "sha256_text")
+fn sha256_text(value: String) -> String
+
+@external(erlang, "dropnest_ffi", "sha256_file")
+fn sha256_file(path: String) -> Result(String, Nil)
+
+@external(erlang, "dropnest_ffi", "make_private")
+fn make_private(path: String, directory: Bool) -> Nil
+
+@external(erlang, "dropnest_ffi", "storage_transaction")
+fn storage_transaction(action: fn() -> a) -> a
+
+@external(erlang, "dropnest_ffi", "sanitize_filename")
+fn sanitize_filename(value: String) -> String
+
+const max_text_bytes = 200_000
+
+const max_drop_count = 5000
+
 pub type StorageError {
   StorageError(message: String)
 }
@@ -17,18 +36,26 @@ pub fn setup(config: app_config.Config) -> Result(Nil, StorageError) {
   use _ <- result.try(validate_directory(config.receive_dir))
   use _ <- result.try(create_directory(config.data_dir, "data directory"))
   use _ <- result.try(create_directory(config.receive_dir, "receive directory"))
+  make_private(config.data_dir, True)
+  make_private(config.receive_dir, True)
 
   case simplifile.read(from: app_config.metadata_path(config)) {
     Ok(contents) ->
       case drop.decode_result(contents) {
-        Ok(_) -> Ok(Nil)
+        Ok(_) -> {
+          make_private(app_config.metadata_path(config), False)
+          Ok(Nil)
+        }
         Error(_) -> backup_corrupt_metadata(config, contents)
       }
     Error(_) -> {
       case
         simplifile.write(to: app_config.metadata_path(config), contents: "[]\n")
       {
-        Ok(_) -> Ok(Nil)
+        Ok(_) -> {
+          make_private(app_config.metadata_path(config), False)
+          Ok(Nil)
+        }
         Error(error) ->
           Error(StorageError(
             message: "Could not create metadata file: "
@@ -61,7 +88,10 @@ pub fn save(
   case simplifile.write(to: temporary_path, contents: contents) {
     Ok(_) ->
       case simplifile.rename(at: temporary_path, to: metadata_path) {
-        Ok(_) -> Ok(Nil)
+        Ok(_) -> {
+          make_private(metadata_path, False)
+          Ok(Nil)
+        }
         Error(error) ->
           Error(StorageError(
             message: "Could not replace metadata: "
@@ -88,11 +118,25 @@ pub fn add_text_with_expiration(
   content: String,
   expires_minutes: Int,
 ) -> Result(Nil, StorageError) {
+  storage_transaction(fn() {
+    add_text_unlocked(config, content, expires_minutes)
+  })
+}
+
+fn add_text_unlocked(
+  config: app_config.Config,
+  content: String,
+  expires_minutes: Int,
+) -> Result(Nil, StorageError) {
   let clean = string.trim(content)
-  case clean == "" {
-    True ->
+  let size = string.byte_size(clean)
+  case clean == "", size > max_text_bytes {
+    True, _ ->
       Error(StorageError(message: "Paste some text before sending a text drop."))
-    False -> {
+    _, True -> Error(StorageError(message: "Text drops are limited to 200 KB."))
+    False, False -> {
+      let drops = all(config)
+      use _ <- result.try(ensure_drop_capacity(drops))
       let now = now_seconds()
       let item =
         drop.Drop(
@@ -102,12 +146,13 @@ pub fn add_text_with_expiration(
           original_filename: None,
           stored_filename: None,
           mime_type: Some("text/plain"),
-          size_bytes: Some(string.byte_size(clean)),
+          size_bytes: Some(size),
+          checksum_sha256: Some(sha256_text(clean)),
           text_content: Some(clean),
           created_at: now,
           expires_at: expires_at(now, expires_minutes),
         )
-      save(config, [item, ..all(config)])
+      save(config, [item, ..drops])
     }
   }
 }
@@ -139,38 +184,86 @@ pub fn add_file_with_expiration(
   original_filename: String,
   expires_minutes: Int,
 ) -> Result(Nil, StorageError) {
+  storage_transaction(fn() {
+    add_file_unlocked(config, temp_path, original_filename, expires_minutes)
+  })
+}
+
+fn add_file_unlocked(
+  config: app_config.Config,
+  temp_path: String,
+  original_filename: String,
+  expires_minutes: Int,
+) -> Result(Nil, StorageError) {
   let id = safe_id()
   let destination = drop_path(config, id)
   case simplifile.copy_file(at: temp_path, to: destination) {
     Ok(_) -> {
+      make_private(destination, False)
       let size = case simplifile.file_info(destination) {
         Ok(info) -> info.size
         Error(_) -> 0
       }
 
-      case size <= 0 {
-        True -> {
+      let drops = all(config)
+      let over_storage_limit =
+        stored_file_bytes(drops) + size > config.max_storage_bytes
+      case size <= 0, size > config.max_upload_bytes, over_storage_limit {
+        True, _, _ -> {
           let _ = simplifile.delete_file(at: destination)
           Error(StorageError(message: "Choose a non-empty file and try again."))
         }
-        False -> {
-          let now = now_seconds()
-          let safe_name = safe_title(original_filename)
-          let item =
-            drop.Drop(
-              id:,
-              kind: File,
-              title: safe_name,
-              original_filename: Some(safe_name),
-              stored_filename: Some(id),
-              mime_type: Some("application/octet-stream"),
-              size_bytes: Some(size),
-              text_content: None,
-              created_at: now,
-              expires_at: expires_at(now, expires_minutes),
-            )
-          save(config, [item, ..all(config)])
+        _, True, _ -> {
+          let _ = simplifile.delete_file(at: destination)
+          Error(StorageError(message: "That file exceeds the upload limit."))
         }
+        _, _, True -> {
+          let _ = simplifile.delete_file(at: destination)
+          Error(StorageError(
+            message: "The DropNest storage limit has been reached. Delete or expire a file before uploading another.",
+          ))
+        }
+        False, False, False ->
+          case ensure_drop_capacity(drops) {
+            Error(error) -> {
+              let _ = simplifile.delete_file(at: destination)
+              Error(error)
+            }
+            Ok(_) ->
+              case sha256_file(destination) {
+                Ok(checksum) -> {
+                  let now = now_seconds()
+                  let safe_name = safe_title(original_filename)
+                  let item =
+                    drop.Drop(
+                      id:,
+                      kind: File,
+                      title: safe_name,
+                      original_filename: Some(safe_name),
+                      stored_filename: Some(id),
+                      mime_type: Some("application/octet-stream"),
+                      size_bytes: Some(size),
+                      checksum_sha256: Some(checksum),
+                      text_content: None,
+                      created_at: now,
+                      expires_at: expires_at(now, expires_minutes),
+                    )
+                  case save(config, [item, ..drops]) {
+                    Ok(_) -> Ok(Nil)
+                    Error(error) -> {
+                      let _ = simplifile.delete_file(at: destination)
+                      Error(error)
+                    }
+                  }
+                }
+                Error(_) -> {
+                  let _ = simplifile.delete_file(at: destination)
+                  Error(StorageError(
+                    message: "Could not calculate the uploaded file's SHA-256 checksum.",
+                  ))
+                }
+              }
+          }
       }
     }
     Error(error) ->
@@ -186,7 +279,23 @@ pub fn find(config: app_config.Config, id: String) -> Result(Drop, Nil) {
   |> list.find(fn(item) { item.id == id })
 }
 
+pub fn file_is_intact(config: app_config.Config, item: Drop) -> Bool {
+  case item.kind, item.checksum_sha256, valid_id(item.id) {
+    File, Some(expected), True ->
+      sha256_file(drop_path(config, item.id)) == Ok(expected)
+    File, None, True -> True
+    _, _, _ -> False
+  }
+}
+
 pub fn delete(
+  config: app_config.Config,
+  id: String,
+) -> Result(Nil, StorageError) {
+  storage_transaction(fn() { delete_unlocked(config, id) })
+}
+
+fn delete_unlocked(
   config: app_config.Config,
   id: String,
 ) -> Result(Nil, StorageError) {
@@ -203,6 +312,12 @@ pub fn delete(
 }
 
 pub fn clean_expired(config: app_config.Config) -> Result(Nil, StorageError) {
+  storage_transaction(fn() { clean_expired_unlocked(config) })
+}
+
+fn clean_expired_unlocked(
+  config: app_config.Config,
+) -> Result(Nil, StorageError) {
   let now = now_seconds()
   let drops = all(config)
   let active_drops = list.filter(drops, fn(item) { active(item, now) })
@@ -221,6 +336,25 @@ pub fn clean_expired(config: app_config.Config) -> Result(Nil, StorageError) {
     True -> Ok(Nil)
     False -> save(config, active_drops)
   }
+}
+
+fn ensure_drop_capacity(drops: List(Drop)) -> Result(Nil, StorageError) {
+  case list.length(drops) < max_drop_count {
+    True -> Ok(Nil)
+    False ->
+      Error(StorageError(
+        message: "DropNest has reached its 5,000-drop safety limit. Delete or expire an older drop first.",
+      ))
+  }
+}
+
+pub fn stored_file_bytes(drops: List(Drop)) -> Int {
+  list.fold(drops, 0, fn(total, item) {
+    case item.kind, item.size_bytes {
+      File, Some(size) -> total + size
+      _, _ -> total
+    }
+  })
 }
 
 fn active(item: Drop, now: Int) -> Bool {
@@ -290,9 +424,9 @@ fn hex_graphemes() -> List(String) {
 pub fn safe_title(filename: String) -> String {
   let cleaned =
     filename
-    |> string.replace(each: "/", with: "_")
-    |> string.replace(each: "\\", with: "_")
+    |> sanitize_filename
     |> string.trim
+    |> string.slice(at_index: 0, length: 180)
 
   case cleaned {
     "" -> "Untitled"
@@ -360,7 +494,10 @@ fn backup_corrupt_metadata(
       case
         simplifile.write(to: app_config.metadata_path(config), contents: "[]\n")
       {
-        Ok(_) -> Ok(Nil)
+        Ok(_) -> {
+          make_private(app_config.metadata_path(config), False)
+          Ok(Nil)
+        }
         Error(error) ->
           Error(StorageError(
             message: "Metadata is corrupt and could not be reset: "

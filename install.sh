@@ -27,6 +27,7 @@ Environment:
 
 DropNest is distributed as a Gleam Erlang shipment.
 It does not require Gleam to run, but it does require Erlang.
+Temporary public links additionally require the optional cloudflared executable.
 EOF
 }
 
@@ -178,5 +179,8 @@ echo "Run:"
 echo "  dropnest serve"
 echo ""
 echo "LAN mode:"
-echo "  dropnest serve --lan --pin 1234 --dir ~/Downloads/DropNest"
+echo "  dropnest serve --lan --pin family-owl-72 --dir ~/Downloads/DropNest"
+echo ""
+echo "Temporary friend link (requires cloudflared):"
+echo "  dropnest serve --tunnel --pin family-owl-72 --dir ~/Downloads/DropNest"
 warn_path

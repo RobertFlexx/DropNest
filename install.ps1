@@ -20,7 +20,7 @@ function Show-Help {
   Write-Host "  powershell -ExecutionPolicy Bypass -File install.ps1"
   Write-Host "  powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall"
   Write-Host ""
-  Write-Host "DropNest is distributed as a Gleam Erlang shipment. It requires Erlang to run."
+  Write-Host "DropNest is distributed as a Gleam Erlang shipment. It requires Erlang to run. Temporary public links also require the optional cloudflared executable."
   Write-Host "Set GITHUB_OWNER or GITHUB_REPO to install from a fork."
 }
 
@@ -81,7 +81,10 @@ try {
   Write-Host "  dropnest serve"
   Write-Host ""
   Write-Host "LAN mode:"
-  Write-Host "  dropnest serve --lan --pin 1234 --dir `"$env:USERPROFILE\Downloads\DropNest`""
+  Write-Host "  dropnest serve --lan --pin family-owl-72 --dir `"$env:USERPROFILE\Downloads\DropNest`""
+  Write-Host ""
+  Write-Host "Temporary friend link (requires cloudflared):"
+  Write-Host "  dropnest serve --tunnel --pin family-owl-72 --dir `"$env:USERPROFILE\Downloads\DropNest`""
 
   $PathParts = $env:PATH -split ";"
   if ($PathParts -notcontains $InstallDir) {

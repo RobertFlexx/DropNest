@@ -16,6 +16,7 @@ pub type Drop {
     stored_filename: Option(String),
     mime_type: Option(String),
     size_bytes: Option(Int),
+    checksum_sha256: Option(String),
     text_content: Option(String),
     created_at: Int,
     expires_at: Int,
@@ -64,6 +65,7 @@ pub fn encode(item: Drop) -> json.Json {
     #("stored_filename", optional_string(item.stored_filename)),
     #("mime_type", optional_string(item.mime_type)),
     #("size_bytes", optional_int(item.size_bytes)),
+    #("checksum_sha256", optional_string(item.checksum_sha256)),
     #("text_content", optional_string(item.text_content)),
     #("created_at", json.int(item.created_at)),
     #("expires_at", json.int(item.expires_at)),
@@ -94,6 +96,11 @@ fn decoder() -> decode.Decoder(Drop) {
     None,
     decode.optional(decode.int),
   )
+  use checksum_sha256 <- decode.optional_field(
+    "checksum_sha256",
+    None,
+    decode.optional(decode.string),
+  )
   use text_content <- decode.optional_field(
     "text_content",
     None,
@@ -109,6 +116,7 @@ fn decoder() -> decode.Decoder(Drop) {
     stored_filename:,
     mime_type:,
     size_bytes:,
+    checksum_sha256:,
     text_content:,
     created_at:,
     expires_at:,
