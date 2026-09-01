@@ -19,6 +19,7 @@ Do not forward DropNest's plain HTTP port directly from a router. A direct port 
 - Access keys are HMAC-verified with constant-time comparison. Browsers receive an opaque HttpOnly, SameSite session token, never the key.
 - Public invite tokens are random and only their keyed HMAC digests are compared.
 - Temporary invites expire after 15 minutes and admit two distinct visitor fingerprints.
+- An authenticated localhost session can atomically rotate the invite. Rotation invalidates the old token and claim set while leaving established browser sessions intact; proxy and LAN visitors cannot invoke it.
 - The fingerprint is a keyed, in-memory digest of the proxy-provided address and normal request traits; raw identifying values are not stored, and session cookies are bound to it.
 - CSRF tokens protect all mutations, and cross-site browser POSTs are rejected before multipart bodies are parsed.
 - Unlock, invite, upload, text, and other write routes have fixed-window per-fingerprint rate limits.
@@ -35,6 +36,7 @@ Do not forward DropNest's plain HTTP port directly from a router. A direct port 
 - Cloudflare terminates TLS for Quick Tunnels and can technically observe traffic. This is encrypted transport, not end-to-end encryption between browser and DropNest.
 - Quick Tunnels are a third-party temporary service without an uptime guarantee. If one stops, DropNest logs a warning and local/LAN operation remains available.
 - A capability link can be forwarded. Anyone holding it can try to claim one of the two visitor slots before it expires.
+- Regenerating an invite revokes future use of its URL, not sessions that were already admitted. Lock or restart DropNest when existing visitors must lose access.
 - Fingerprints are rate-limit signals, not perfect identity. VPN changes, shared NAT, browser updates, or deliberate evasion can change or merge identities.
 - Host compromise, malicious files, malware scanning, content moderation, backups, and operating-system patching remain the operator's responsibility.
 

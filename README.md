@@ -11,6 +11,7 @@ the computer running DropNest remains the host and source of truth. uploads land
 - starts in local-only mode unless you ask for LAN mode
 - opens to your network with `--lan` and requires an 8+ character access key
 - creates an optional 15-minute, two-visitor HTTPS friend invite with `--tunnel`
+- regenerates that friend invite from localhost without stopping the server
 - keeps the public tunnel outbound-only, so it does not change router or firewall rules
 - lets you choose the receive folder with `--dir`
 - can read defaults from `dropnest.conf`
@@ -213,10 +214,11 @@ original filenames are kept for display and download names. stored files use gen
 
 after unlocking the local host page, copy the friend link shown at the top. it contains a random capability token and behaves as follows:
 
-- the invite expires 15 minutes after DropNest starts
+- the invite expires 15 minutes after it is generated
 - it admits at most two distinct visitor fingerprints
 - an admitted visitor gets a 12-hour HttpOnly, Secure, SameSite session
 - revisiting from the same admitted browser does not consume another slot
+- the authenticated localhost page can regenerate the link without stopping DropNest; this invalidates the old invite, resets its timer and two visitor slots, and leaves existing sessions connected
 - restarting DropNest creates a new tunnel hostname, token, HMAC key, counters, and sessions
 
 the visitor fingerprint is a keyed HMAC over the tunnel-provided client address and ordinary HTTP browser traits. raw IP addresses and user-agent strings are never stored. sessions are bound to this fingerprint, so copying a cookie to a different fingerprint does not authenticate it. this is rate-limit identity, not advertising fingerprinting, and it cannot be perfectly stable across VPN, browser, or network changes.
@@ -234,6 +236,7 @@ Cloudflare documents Quick Tunnels as a testing/development service without an S
 - `POST /drops/:id/delete` deletes a drop
 - `POST /unlock` creates a hashed session without putting the access key in a cookie
 - `POST /logout` removes that browser session
+- `POST /invite/regenerate` rotates the invite from an authenticated localhost session
 - `GET /i/:token` claims a temporary two-visitor friend invite
 - `GET /health` returns a basic health check
 
@@ -299,6 +302,9 @@ artifacts are written to `dist/`.
 [ ] gleam run -- serve --tunnel --pin family-owl-72
 [ ] first two public visitor fingerprints are admitted and a third receives 410
 [ ] invite expires after 15 minutes
+[ ] localhost can regenerate the friend link without stopping DropNest
+[ ] regenerated link rejects the old token and admits two new fingerprints
+[ ] tunnel visitors cannot see or call the regeneration control
 [ ] receive directory is created
 [ ] homepage shows receive directory
 [ ] file upload from another device saves on host

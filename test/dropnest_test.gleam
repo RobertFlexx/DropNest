@@ -150,7 +150,14 @@ pub fn receive_directory_rejects_broad_paths_test() {
 
 pub fn homepage_contains_offline_qr_engine_test() {
   let html =
-    view.home(config.default(), [], "csrf-test", "nonce-test", option.None)
+    view.home(
+      config.default(),
+      [],
+      "csrf-test",
+      "nonce-test",
+      option.None,
+      False,
+    )
 
   string.contains(html, "const DropNestQR =")
   |> should.be_true
@@ -197,6 +204,50 @@ pub fn invite_is_limited_to_two_fingerprints_test() {
   security.claim_invite("test-invite-two-fingerprints", "visitor-a", 2)
   |> should.be_true
   security.claim_invite("test-invite-two-fingerprints", "visitor-c", 2)
+  |> should.be_false
+}
+
+pub fn friend_link_rotation_invalidates_old_invite_and_resets_slots_test() {
+  security.setup()
+  security.set_active_invite("token-a", "digest-a", 1000)
+
+  security.claim_active_invite("digest-a", "visitor-a", 100, 2)
+  |> should.equal(security.InviteAccepted)
+  security.claim_active_invite("digest-a", "visitor-b", 100, 2)
+  |> should.equal(security.InviteAccepted)
+  security.claim_active_invite("digest-a", "visitor-c", 100, 2)
+  |> should.equal(security.InviteFull)
+
+  security.set_active_invite("token-b", "digest-b", 2000)
+
+  security.active_invite()
+  |> should.equal(Ok(#("token-b", "digest-b", 2000)))
+  security.claim_active_invite("digest-a", "visitor-a", 100, 2)
+  |> should.equal(security.InviteInvalid)
+  security.claim_active_invite("digest-b", "visitor-c", 100, 2)
+  |> should.equal(security.InviteAccepted)
+}
+
+pub fn friend_link_regeneration_control_is_host_only_test() {
+  let settings =
+    config.Config(
+      ..config.default(),
+      public_url: option.Some("https://drop.example"),
+      tunnel: True,
+      pin: option.Some("family-owl-72"),
+    )
+  let invite = option.Some("https://drop.example/i/fresh-token")
+
+  let local_html =
+    view.home(settings, [], "csrf-test", "nonce-test", invite, True)
+  string.contains(local_html, "action='/invite/regenerate'")
+  |> should.be_true
+  string.contains(local_html, "Existing sessions stay connected")
+  |> should.be_true
+
+  let visitor_html =
+    view.home(settings, [], "csrf-test", "nonce-test", invite, False)
+  string.contains(visitor_html, "action='/invite/regenerate'")
   |> should.be_false
 }
 

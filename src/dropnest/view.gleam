@@ -15,12 +15,13 @@ pub fn home(
   csrf_token: String,
   nonce: String,
   invite_url: Option(String),
+  can_regenerate_invite: Bool,
 ) -> String {
   page(
     "DropNest",
     [
       header(cfg, csrf_token),
-      share_card(cfg, invite_url),
+      share_card(cfg, invite_url, csrf_token, can_regenerate_invite),
       "<div class='composer-grid'>\n",
       upload_card(cfg, csrf_token),
       text_card(cfg, csrf_token),
@@ -98,7 +99,12 @@ fn header(cfg: config.Config, csrf_token: String) -> String {
   ])
 }
 
-fn share_card(cfg: config.Config, invite_url: Option(String)) -> String {
+fn share_card(
+  cfg: config.Config,
+  invite_url: Option(String),
+  csrf_token: String,
+  can_regenerate_invite: Bool,
+) -> String {
   let mode = case cfg.lan {
     True -> "Same Wi-Fi"
     False -> "This device"
@@ -125,9 +131,20 @@ fn share_card(cfg: config.Config, invite_url: Option(String)) -> String {
       "Only this computer can open the link until LAN or tunnel mode is enabled.",
     )
   }
+  let regenerate = case cfg.tunnel, invite_url, can_regenerate_invite {
+    True, Some(_), True ->
+      "  <div class='invite-actions'>"
+      <> "    <form method='post' action='/invite/regenerate'>"
+      <> csrf_input(csrf_token)
+      <> "      <button class='secondary compact'>Regenerate friend link</button>"
+      <> "    </form>"
+      <> "    <small>Invalidates the old invite and resets its 15-minute, two-visitor allowance. Existing sessions stay connected.</small>"
+      <> "  </div>"
+    _, _, _ -> ""
+  }
 
   html([
-    "<section class='share-card'>",
+    "<section class='share-card' id='friend-link'>",
     "  <div class='share-heading'>",
     "    <div><p class='eyebrow'>"
       <> esc(label)
@@ -146,6 +163,7 @@ fn share_card(cfg: config.Config, invite_url: Option(String)) -> String {
       <> esc(address)
       <> "'>QR code</button>",
     "  </div>",
+    regenerate,
     "  <div class='qr-panel' id='qr-panel' hidden>",
     "    <div id='qr-code' aria-label='QR code for DropNest URL'></div>",
     "    <p class='muted'>Scan with the device you want to invite.</p>",
@@ -957,6 +975,11 @@ fn css() -> String {
       ".link-row .primary:hover { background: #fff; }",
       ".link-row .secondary { background: transparent; border-color: rgba(255,255,255,.35); color: #fff; }",
       ".link-row .secondary:hover { background: rgba(255,255,255,.1); }",
+      ".invite-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; color: #c6ddd5; }",
+      ".invite-actions form { margin: 0; flex: 0 0 auto; }",
+      ".invite-actions small { line-height: 1.45; }",
+      ".invite-actions .secondary { background: transparent; border-color: rgba(255,255,255,.35); color: #fff; }",
+      ".invite-actions .secondary:hover { background: rgba(255,255,255,.1); }",
       ".share-card .qr-panel { background: #fff; color: var(--ink); border: 0; }",
       "",
       ".composer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: stretch; }",
@@ -1054,6 +1077,7 @@ fn css() -> String {
       "  .composer-grid { grid-template-columns: 1fr; }",
       "  .link-row { grid-template-columns: 1fr 1fr; }",
       "  .link-row input { grid-column: 1 / -1; }",
+      "  .invite-actions { align-items: flex-start; flex-direction: column; }",
       "  .server-details dl { grid-template-columns: 1fr; }",
       "  .share-heading { flex-direction: column; }",
       "}",

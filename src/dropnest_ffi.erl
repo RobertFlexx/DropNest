@@ -8,6 +8,10 @@
   make_private/2,
   start_quick_tunnel/1,
   claim_invite/3,
+  set_active_invite/3,
+  clear_active_invite/0,
+  get_active_invite/0,
+  claim_active_invite/4,
   rate_limit/3,
   init_security_state/0,
   prune_rate_limits/1,
@@ -154,6 +158,68 @@ claim_invite_locked(Invite, Device, Limit) ->
       end
   end.
 
+set_active_invite(Token, Digest, ExpiresAt) ->
+  retry_transaction(
+    {{dropnest_active_invite, node()}, self()},
+    fun() ->
+      remove_active_invite_claims(),
+      Table = ensure_named_table(dropnest_invite_state),
+      true = ets:insert(Table, {active, Token, Digest, ExpiresAt}),
+      nil
+    end
+  ).
+
+clear_active_invite() ->
+  retry_transaction(
+    {{dropnest_active_invite, node()}, self()},
+    fun() ->
+      remove_active_invite_claims(),
+      Table = ensure_named_table(dropnest_invite_state),
+      true = ets:delete(Table, active),
+      nil
+    end
+  ).
+
+get_active_invite() ->
+  Table = ensure_named_table(dropnest_invite_state),
+  case ets:lookup(Table, active) of
+    [{active, Token, Digest, ExpiresAt}] ->
+      {ok, {Token, Digest, ExpiresAt}};
+    [] ->
+      {error, nil}
+  end.
+
+claim_active_invite(SuppliedDigest, Device, Now, Limit) ->
+  retry_transaction(
+    {{dropnest_active_invite, node()}, self()},
+    fun() ->
+      Table = ensure_named_table(dropnest_invite_state),
+      case ets:lookup(Table, active) of
+        [] -> 0;
+        [{active, _Token, _ExpectedDigest, ExpiresAt}] when Now >= ExpiresAt -> 2;
+        [{active, _Token, ExpectedDigest, _ExpiresAt}] ->
+          case secure_equals(SuppliedDigest, ExpectedDigest) of
+            false -> 3;
+            true ->
+              case claim_invite_locked(ExpectedDigest, Device, Limit) of
+                true -> 1;
+                false -> 4
+              end
+          end
+      end
+    end
+  ).
+
+remove_active_invite_claims() ->
+  StateTable = ensure_named_table(dropnest_invite_state),
+  ClaimsTable = ensure_invite_table(),
+  case ets:lookup(StateTable, active) of
+    [{active, _Token, Digest, _ExpiresAt}] ->
+      true = ets:match_delete(ClaimsTable, {{Digest, '_'}, true});
+    [] ->
+      true
+  end.
+
 ensure_invite_table() ->
   case ets:whereis(dropnest_invite_claims) of
     undefined ->
@@ -165,6 +231,7 @@ ensure_invite_table() ->
 
 init_security_state() ->
   _ = ensure_named_table(dropnest_invite_claims),
+  _ = ensure_named_table(dropnest_invite_state),
   _ = ensure_named_table(dropnest_rate_limits),
   nil.
 

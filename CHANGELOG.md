@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added authenticated localhost-only friend-link regeneration. It atomically invalidates the old invite, resets the 15-minute/two-visitor allowance, and keeps the DropNest server and established sessions running.
+
 ## 2.0.0 - 2026-09-01
 
 DropNest 2.0.0 turns the local drop server into a safer family and small-group sharing service while preserving local ownership of every file.

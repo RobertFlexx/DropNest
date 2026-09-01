@@ -24,9 +24,6 @@ type Runtime {
     csrf_token: String,
     pin_digest: Option(String),
     session_token: Option(String),
-    invite_token: Option(String),
-    invite_digest: Option(String),
-    invite_expires_at: Int,
   )
 }
 
@@ -52,9 +49,9 @@ pub fn start(config: app_config.Config) -> Nil {
 
   security.setup()
   let secret = wisp.random_string(64)
-  let invite_token = case config.tunnel {
-    True -> Some(wisp.random_string(48))
-    False -> None
+  case config.tunnel {
+    True -> activate_new_invite(secret)
+    False -> security.clear_active_invite()
   }
   let runtime =
     Runtime(
@@ -63,9 +60,6 @@ pub fn start(config: app_config.Config) -> Nil {
       csrf_token: wisp.random_string(48),
       pin_digest: digest_pin(config.pin, secret),
       session_token: digest_session(config.pin, secret),
-      invite_token:,
-      invite_digest: digest_invite(invite_token, secret),
-      invite_expires_at: storage.now_seconds() + 15 * 60,
     )
 
   let _ = storage.clean_expired(config)
@@ -73,9 +67,19 @@ pub fn start(config: app_config.Config) -> Nil {
   print_banner(config)
 
   let handler = fn(request) { handle_request(request, runtime) }
+  let wisp_handler = wisp_mist.handler(handler, secret)
+  let handler = fn(request: request.Request(mist.Connection)) {
+    let loopback = case mist.get_connection_info(request.body) {
+      Ok(mist.ConnectionInfo(_, mist.IpV4(127, _, _, _))) -> "1"
+      Ok(mist.ConnectionInfo(_, mist.IpV6(0, 0, 0, 0, 0, 0, 0, 1))) -> "1"
+      _ -> "0"
+    }
+    request
+    |> request.set_header("x-dropnest-loopback-peer", loopback)
+    |> wisp_handler
+  }
   case
     handler
-    |> wisp_mist.handler(secret)
     |> mist.new
     |> mist.bind(app_config.bind_address(config))
     |> mist.port(config.port)
@@ -145,6 +149,7 @@ fn route(
           runtime.csrf_token,
           nonce,
           invite_url(runtime),
+          local_admin_request(request),
         ),
         200,
       )
@@ -158,6 +163,7 @@ fn route(
 
     Post, ["unlock"] -> unlock(request, runtime, nonce)
     Post, ["logout"] -> logout(request, runtime, nonce)
+    Post, ["invite", "regenerate"] -> regenerate_invite(request, runtime, nonce)
     Post, ["drops", "text"] -> create_text(request, runtime, nonce)
     Post, ["drops", "file"] -> create_file(request, runtime, nonce)
     Get, ["drops", id, "download"] -> download(id, config, nonce)
@@ -381,55 +387,87 @@ fn accept_invite(
 ) -> wisp.Response {
   let supplied =
     security.hmac_sha256(runtime.secret, "dropnest-invite:" <> token)
-  case storage.now_seconds() >= runtime.invite_expires_at {
-    True ->
-      wisp.html_response(
-        view.message(
-          "Friend link expired",
-          "This 15-minute invite has expired. Ask the host to restart DropNest for a fresh link.",
-          nonce,
-        ),
-        410,
-      )
-    False -> accept_unexpired_invite(supplied, request, runtime, nonce)
-  }
+  accept_active_invite(supplied, request, runtime, nonce)
 }
 
-fn accept_unexpired_invite(
+fn accept_active_invite(
   supplied: String,
   request: wisp.Request,
   runtime: Runtime,
   nonce: String,
 ) -> wisp.Response {
-  case runtime.invite_digest, browser_session(runtime, request) {
-    Some(expected), Some(session) ->
-      case security.secure_equals(supplied, expected) {
-        True -> {
-          let fingerprint = client_fingerprint(request, runtime.secret)
-          case security.claim_invite(expected, fingerprint, 2) {
-            True ->
-              wisp.redirect(to: "/")
-              |> wisp.set_header(
-                "set-cookie",
-                "dropnest_session="
-                  <> session
-                  <> "; Path=/; Max-Age=43200; HttpOnly; SameSite=Strict"
-                  <> secure_cookie_suffix(request),
-              )
-            False ->
-              wisp.html_response(
-                view.message(
-                  "Friend link already used",
-                  "This temporary link has already granted access to two browsers. Ask the host to restart DropNest for a new link.",
-                  nonce,
-                ),
-                410,
-              )
-          }
-        }
-        False -> invalid_invite(nonce)
+  case browser_session(runtime, request) {
+    Some(session) -> {
+      let fingerprint = client_fingerprint(request, runtime.secret)
+      case
+        security.claim_active_invite(
+          supplied,
+          fingerprint,
+          storage.now_seconds(),
+          2,
+        )
+      {
+        security.InviteAccepted ->
+          wisp.redirect(to: "/")
+          |> wisp.set_header(
+            "set-cookie",
+            "dropnest_session="
+              <> session
+              <> "; Path=/; Max-Age=43200; HttpOnly; SameSite=Strict"
+              <> secure_cookie_suffix(request),
+          )
+        security.InviteExpired ->
+          wisp.html_response(
+            view.message(
+              "Friend link expired",
+              "This 15-minute invite has expired. Ask the host to regenerate the friend link from localhost.",
+              nonce,
+            ),
+            410,
+          )
+        security.InviteFull ->
+          wisp.html_response(
+            view.message(
+              "Friend link already used",
+              "This temporary link has already granted access to two browsers. Ask the host to regenerate it from localhost.",
+              nonce,
+            ),
+            410,
+          )
+        security.InviteInvalid -> invalid_invite(nonce)
+        security.InviteUnavailable -> invalid_invite(nonce)
       }
-    _, _ -> invalid_invite(nonce)
+    }
+    None -> invalid_invite(nonce)
+  }
+}
+
+fn regenerate_invite(
+  request: wisp.Request,
+  runtime: Runtime,
+  nonce: String,
+) -> wisp.Response {
+  use form <- wisp.require_form(request)
+  case
+    valid_csrf(form.values, runtime.csrf_token),
+    runtime.config.tunnel,
+    local_admin_request(request)
+  {
+    False, _, _ -> csrf_error(nonce)
+    _, False, _ -> invalid_invite(nonce)
+    _, _, False ->
+      wisp.html_response(
+        view.message(
+          "Host action only",
+          "Open DropNest through localhost on the computer running it to regenerate the friend link.",
+          nonce,
+        ),
+        403,
+      )
+    True, True, True -> {
+      activate_new_invite(runtime.secret)
+      wisp.redirect(to: "/#friend-link")
+    }
   }
 }
 
@@ -438,6 +476,8 @@ fn request_allowed(request: wisp.Request, runtime: Runtime) -> Bool {
   case request.method, wisp.path_segments(request) {
     Post, ["unlock"] -> security.rate_limit("unlock:" <> fingerprint, 5, 5 * 60)
     Get, ["i", _] -> security.rate_limit("invite:" <> fingerprint, 20, 15 * 60)
+    Post, ["invite", "regenerate"] ->
+      security.rate_limit("regenerate:" <> fingerprint, 12, 60 * 60)
     Post, ["drops", "file"] ->
       security.rate_limit("file:" <> fingerprint, 20, 10 * 60)
     Post, ["drops", "text"] ->
@@ -615,19 +655,38 @@ fn browser_session(runtime: Runtime, request: wisp.Request) -> Option(String) {
   }
 }
 
-fn digest_invite(invite: Option(String), secret: String) -> Option(String) {
-  case invite {
-    Some(token) ->
-      Some(security.hmac_sha256(secret, "dropnest-invite:" <> token))
-    None -> None
-  }
+fn activate_new_invite(secret: String) -> Nil {
+  let token = wisp.random_string(48)
+  let digest = security.hmac_sha256(secret, "dropnest-invite:" <> token)
+  security.set_active_invite(token, digest, storage.now_seconds() + 15 * 60)
 }
 
 fn invite_url(runtime: Runtime) -> Option(String) {
-  case runtime.config.public_url, runtime.invite_token {
-    Some(base), Some(token) -> Some(base <> "/i/" <> token)
+  case runtime.config.public_url, security.active_invite() {
+    Some(base), Ok(#(token, _, _)) -> Some(base <> "/i/" <> token)
     _, _ -> None
   }
+}
+
+fn local_admin_request(request: wisp.Request) -> Bool {
+  let host_is_local = case request.get_header(request, "host") {
+    Ok(host) -> {
+      let host = string.lowercase(host)
+      host == "localhost"
+      || string.starts_with(host, "localhost:")
+      || host == "127.0.0.1"
+      || string.starts_with(host, "127.0.0.1:")
+      || host == "[::1]"
+      || string.starts_with(host, "[::1]:")
+    }
+    Error(_) -> False
+  }
+  let peer_is_loopback =
+    request.get_header(request, "x-dropnest-loopback-peer") == Ok("1")
+  let bypasses_public_proxy =
+    request.get_header(request, "cf-connecting-ip") |> result.is_error
+
+  host_is_local && peer_is_loopback && bypasses_public_proxy
 }
 
 fn prepare_tunnel(config: app_config.Config) -> app_config.Config {
