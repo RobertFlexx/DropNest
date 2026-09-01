@@ -33,7 +33,7 @@ rebar3 --version
 from the repo root:
 
 ```sh
-VERSION=1.0.0 scripts/package-release.sh
+VERSION=2.0.0 scripts/package-release.sh
 ```
 
 the script rebuilds the app, exports the shipment, writes checksums, and puts everything in `dist/`:
@@ -43,8 +43,8 @@ dist/dropnest-unix.tar.gz
 dist/dropnest-unix.tar.gz.sha256
 dist/dropnest-windows.zip
 dist/dropnest-windows.zip.sha256
-dist/dropnest-v1.0.0-unix.tar.gz
-dist/dropnest-v1.0.0-windows.zip
+dist/dropnest-v2.0.0-unix.tar.gz
+dist/dropnest-v2.0.0-windows.zip
 ```
 
 ## verify it
@@ -66,8 +66,8 @@ it does not start the web server. still do the LAN test by hand before publishin
 ## tag it
 
 ```sh
-git tag v1.0.0
-git push origin v1.0.0
+git tag -a v2.0.0 -m "DropNest 2.0.0"
+git push origin v2.0.0
 ```
 
 GitHub Actions builds the shipment archives and publishes the release files to GitHub Releases.

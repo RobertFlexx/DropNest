@@ -320,6 +320,7 @@ artifacts are written to `dist/`.
 
 ```text
 .github/workflows/release.yml  GitHub release packaging workflow
+CHANGELOG.md                   release history and upgrade notes
 docs/dropnest-preview.svg      README preview image
 SECURITY.md                    threat model and always-on checklist
 scripts/package-release.sh     local release archive builder
