@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.1 - 2026-09-01
+
+### Fixed
+
+- Made the friend-invite QR code render larger at an exact integer pixel scale, with a roomier quiet zone, so phone cameras scan it reliably instead of failing on the small pixelated version.
+
 ## 2.1.0 - 2026-09-01
 
 ### Added
